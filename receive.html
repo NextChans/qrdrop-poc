@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>QRDrop — 받기</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>📥 받기 <a href="/" style="font-size:13px">홈</a></h1>
+
+      <div class="panel">
+        <button id="startCam">카메라 시작</button>
+        <button id="stopCam" class="secondary" disabled>정지</button>
+        <div id="camErr" class="warnbox" style="margin-top:8px"></div>
+      </div>
+
+      <video id="video" playsinline muted></video>
+      <canvas id="decodeCanvas"></canvas>
+
+      <div class="panel">
+        <div class="row">
+          <div class="stat"><div class="big" id="recvCount">0</div>수신 청크</div>
+          <div class="stat"><div class="big" id="recvTotal">?</div>전체 청크</div>
+          <div class="stat"><div class="big" id="recvPct">0%</div>진행률</div>
+          <div class="stat"><div class="big" id="recvFps">0</div>디코드/초</div>
+        </div>
+        <div class="progressbar" style="margin-top:10px"><div id="bar"></div></div>
+        <div id="missing" class="muted" style="margin-top:8px"></div>
+        <div id="grid"></div>
+      </div>
+
+      <div id="result" class="panel result" style="display:none">
+        <h2>✅ 복원 완료</h2>
+        <img id="resultImg" alt="복원된 사진" />
+        <div style="margin-top:10px">
+          <a id="download" download="qrdrop.jpg"><button>갤러리에 저장 / 다운로드</button></a>
+        </div>
+        <div id="recvSummary" class="muted" style="margin-top:8px"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/receive.ts"></script>
+  </body>
+</html>

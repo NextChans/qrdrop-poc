@@ -1,0 +1,82 @@
+:root {
+  --bg: #0f1115;
+  --panel: #1a1d24;
+  --fg: #e6e8eb;
+  --muted: #8b909a;
+  --accent: #3b82f6;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #ef4444;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+h1 { font-size: 20px; margin: 8px 0 16px; }
+h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); font-weight: 600; }
+
+a { color: var(--accent); }
+
+.home-links { display: flex; gap: 12px; flex-wrap: wrap; }
+.home-links a {
+  flex: 1; min-width: 140px; text-align: center;
+  padding: 24px; background: var(--panel); border-radius: 12px;
+  text-decoration: none; color: var(--fg); font-size: 18px; font-weight: 600;
+}
+
+.panel { background: var(--panel); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+
+label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+input[type=range] { width: 100%; }
+input[type=file] { font-size: 14px; }
+
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.row > div { flex: 1; min-width: 120px; }
+
+button {
+  background: var(--accent); color: white; border: 0; border-radius: 10px;
+  padding: 12px 18px; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+button.secondary { background: #2a2f3a; }
+button:disabled { opacity: 0.4; cursor: default; }
+
+.val { color: var(--fg); font-weight: 600; }
+
+/* QR 송신 화면: 흰 배경 + 충분한 여백으로 카메라 인식률 향상 */
+#qrStage {
+  background: #fff; border-radius: 12px; padding: 28px;
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1; max-width: 520px; margin: 0 auto;
+}
+#qrCanvas { width: 100%; height: 100%; image-rendering: pixelated; }
+
+#video { width: 100%; border-radius: 12px; background: #000; }
+#decodeCanvas { display: none; }
+
+.stat { font-size: 13px; color: var(--muted); }
+.stat .big { font-size: 22px; color: var(--fg); font-weight: 700; }
+
+.progressbar { height: 8px; background: #2a2f3a; border-radius: 4px; overflow: hidden; }
+.progressbar > div { height: 100%; background: var(--ok); width: 0%; transition: width .2s; }
+
+/* 청크 수신 현황 그리드 */
+#grid { display: grid; gap: 2px; margin-top: 10px; }
+#grid > i { aspect-ratio: 1; background: #2a2f3a; border-radius: 2px; }
+#grid > i.have { background: var(--ok); }
+
+.result img { max-width: 100%; border-radius: 12px; }
+.muted { color: var(--muted); font-size: 13px; }
+.warnbox { color: var(--warn); font-size: 13px; }
