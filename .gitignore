@@ -3,3 +3,9 @@ dist
 .DS_Store
 *.local
 .vite
+
+# secrets & self-signed certs
+.env*
+*.pem
+*.key
+*.crt
