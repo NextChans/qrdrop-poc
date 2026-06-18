@@ -44,6 +44,15 @@ startBtn.addEventListener('click', startCam)
 stopBtn.addEventListener('click', stopCam)
 decryptBtn.addEventListener('click', tryDecrypt)
 
+// 빌드/프로토콜 버전 표시 — 송·수신 폰이 같은 버전인지 확인용(서비스워커 캐시 디버깅)
+{
+  const el = document.createElement('div')
+  el.className = 'muted'
+  el.style.cssText = 'text-align:center;font-size:11px;opacity:.55;margin-top:18px'
+  el.textContent = `QRDrop · 프로토콜 QD4 · build ${__BUILD_ID__}`
+  document.querySelector('.wrap')?.appendChild(el)
+}
+
 async function startCam() {
   camErr.textContent = ''
   try {

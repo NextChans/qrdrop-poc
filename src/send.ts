@@ -42,6 +42,16 @@ fileEl.addEventListener('change', () => {
 startBtn.addEventListener('click', start)
 stopBtn.addEventListener('click', stop)
 
+// 빌드/프로토콜 버전 표시 — 송·수신 폰이 같은 버전인지 확인용(서비스워커 캐시 디버깅)
+showVersion()
+function showVersion() {
+  const el = document.createElement('div')
+  el.className = 'muted'
+  el.style.cssText = 'text-align:center;font-size:11px;opacity:.55;margin-top:18px'
+  el.textContent = `QRDrop · 프로토콜 QD4 · build ${__BUILD_ID__}`
+  document.querySelector('.wrap')?.appendChild(el)
+}
+
 // 암호화 토글 ↔ 비밀번호 입력칸 표시
 const encToggle = $<HTMLInputElement>('encToggle')
 const sendPw = $<HTMLInputElement>('sendPw')
