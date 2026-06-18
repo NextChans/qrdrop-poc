@@ -28,6 +28,7 @@ let running = false
 // 현재 수신 세션 상태
 let decoder: FountainDecoder | null = null
 let sess: string | null = null
+let lastSeed = -1 // 화면에 같은 QR이 머무는 동안의 중복 재처리 스킵용
 let startTime = 0
 let decodeCountWindow = 0
 let lastFpsTick = 0
@@ -68,6 +69,7 @@ function stopCam() {
 function resetSession() {
   decoder = null
   sess = null
+  lastSeed = -1
   startTime = 0
   recvTotal.textContent = '?'
   recvCount.textContent = '0'
@@ -83,7 +85,7 @@ function scan(ts: number) {
     const vw = video.videoWidth
     const vh = video.videoHeight
     if (vw && vh) {
-      const targetW = Math.min(640, vw)
+      const targetW = Math.min(500, vw) // 다운스케일↓ → 스캔/초·인식 성공률↑ (640→500)
       const scale = targetW / vw
       const w = Math.round(vw * scale)
       const h = Math.round(vh * scale)
@@ -118,11 +120,16 @@ function handlePayload(bin: number[]) {
   // 새 세션(다른 사진)이거나 첫 프레임이면 디코더 생성
   if (!decoder || frame.sess !== sess) {
     sess = frame.sess
+    lastSeed = -1
     decoder = new FountainDecoder(frame.k, frame.len, frame.sess, frame.data.length)
     recvTotal.textContent = String(frame.k)
     buildGrid(frame.k)
     startTime = performance.now()
   }
+
+  // 같은 QR이 화면에 머무는 동안 동일 seed가 연속 디코드됨 → 재처리 스킵(오버헤드 지표 정확화 + CPU 절약)
+  if (frame.seed === lastSeed) return
+  lastSeed = frame.seed
 
   const gotNew = decoder.addSymbol(frame.seed, frame.data)
   if (gotNew) refreshGrid()
