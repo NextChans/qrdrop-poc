@@ -12,19 +12,21 @@
 // binaryData(number[])로 원시 바이트를 돌려주므로, 바이트를 latin1 문자열로 실어 보내면
 // base64 없이 임의 바이트(0x00·0xFF·구분자 포함)를 그대로 전송/복원할 수 있다.
 //
-// 바이너리 프레임 레이아웃 (헤더 17B, big-endian):
-//   off 0  : magic 'Q'(0x51) 'D'(0x44) '3'(0x33)   3B
-//   off 3  : seed   uint32   — 심볼 식별자. seed<k 면 systematic(블록 seed 단독), 아니면 LT 랜덤
-//   off 7  : k      uint16   — 소스 블록 개수
-//   off 9  : len    uint32   — 원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
-//   off 13 : sess   uint32   — 원본 바이트 djb2 해시(새 이미지/다른 전송 감지)
-//   off 17 : payload         — 블록 크기 B 바이트인 심볼(raw)
+// 바이너리 프레임 레이아웃 (헤더 18B, big-endian):
+//   off 0  : magic 'Q'(0x51) 'D'(0x44) '4'(0x34)   3B
+//   off 3  : flags  uint8    — bit0 = 암호화됨(AES-GCM). 나머지 예약
+//   off 4  : seed   uint32   — 심볼 식별자. seed<k 면 systematic(블록 seed 단독), 아니면 LT 랜덤
+//   off 8  : k      uint16   — 소스 블록 개수
+//   off 10 : len    uint32   — 페이로드 바이트 길이(마지막 블록 zero-pad 트리밍용)
+//   off 14 : sess   uint32   — 페이로드 djb2 해시(새 이미지/다른 전송 감지)
+//   off 18 : payload         — 블록 크기 B 바이트인 심볼(raw)
 //
 // systematic 접두(seed 0..k-1) 덕분에 손실 없는 깨끗한 1패스에서는 v1처럼 빠르게 모든
 // 블록을 받고, 그 뒤 LT 심볼(seed>=k)이 누락분을 재시청 없이 메운다 — 두 방식의 장점 결합.
 
-export const MAGIC3 = [0x51, 0x44, 0x33] // 'Q','D','3'
-export const HEADER_BYTES = 17
+export const MAGIC = [0x51, 0x44, 0x34] // 'Q','D','4'
+export const HEADER_BYTES = 18
+export const FLAG_ENCRYPTED = 1 // flags bit0
 
 // 원본 바이트 djb2 해시(uint32). 세션 식별용(비암호화).
 function djb2Bytes(bytes: Uint8Array): number {
@@ -113,12 +115,14 @@ export class FountainEncoder {
   readonly len: number
   readonly sessInt: number
   readonly sess: string // 표시용(base36)
+  readonly flags: number
   private blocks: Uint8Array[] = []
   private cdf: number[]
 
-  constructor(bytes: Uint8Array, blockSize: number) {
+  constructor(bytes: Uint8Array, blockSize: number, flags = 0) {
     this.len = bytes.length
     this.blockSize = blockSize
+    this.flags = flags & 0xff
     this.k = Math.max(1, Math.ceil(bytes.length / blockSize))
     this.sessInt = djb2Bytes(bytes)
     this.sess = this.sessInt.toString(36)
@@ -136,17 +140,18 @@ export class FountainEncoder {
     return out
   }
 
-  // 바이너리 프레임(헤더 17B + 심볼)을 latin1 문자열로 반환 → qrcode-generator 'Byte' 모드에 그대로.
+  // 바이너리 프레임(헤더 18B + 심볼)을 latin1 문자열로 반환 → qrcode-generator 'Byte' 모드에 그대로.
   frame(seed: number): string {
     const buf = new Uint8Array(HEADER_BYTES + this.blockSize)
     const dv = new DataView(buf.buffer)
-    buf[0] = MAGIC3[0]
-    buf[1] = MAGIC3[1]
-    buf[2] = MAGIC3[2]
-    dv.setUint32(3, seed >>> 0)
-    dv.setUint16(7, this.k)
-    dv.setUint32(9, this.len)
-    dv.setUint32(13, this.sessInt)
+    buf[0] = MAGIC[0]
+    buf[1] = MAGIC[1]
+    buf[2] = MAGIC[2]
+    buf[3] = this.flags
+    dv.setUint32(4, seed >>> 0)
+    dv.setUint16(8, this.k)
+    dv.setUint32(10, this.len)
+    dv.setUint32(14, this.sessInt)
     buf.set(this.symbol(seed), HEADER_BYTES)
     return bytesToLatin1(buf)
   }
@@ -157,6 +162,7 @@ export interface ParsedSymbol {
   k: number
   len: number
   sess: string
+  flags: number
   data: Uint8Array
 }
 
@@ -164,15 +170,16 @@ export interface ParsedSymbol {
 export function parseFrame(bin: number[] | Uint8Array): ParsedSymbol | null {
   const b = bin instanceof Uint8Array ? bin : Uint8Array.from(bin)
   if (b.length <= HEADER_BYTES) return null
-  if (b[0] !== MAGIC3[0] || b[1] !== MAGIC3[1] || b[2] !== MAGIC3[2]) return null
+  if (b[0] !== MAGIC[0] || b[1] !== MAGIC[1] || b[2] !== MAGIC[2]) return null
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
-  const seed = dv.getUint32(3)
-  const k = dv.getUint16(7)
-  const len = dv.getUint32(9)
-  const sessInt = dv.getUint32(13)
+  const flags = b[3]
+  const seed = dv.getUint32(4)
+  const k = dv.getUint16(8)
+  const len = dv.getUint32(10)
+  const sessInt = dv.getUint32(14)
   if (k <= 0 || len <= 0) return null
   const data = b.slice(HEADER_BYTES)
-  return { seed, k, len, sess: sessInt.toString(36), data }
+  return { seed, k, len, sess: sessInt.toString(36), flags, data }
 }
 
 // LT peeling(belief-propagation) 디코더.

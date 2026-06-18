@@ -22,6 +22,13 @@
         <div id="camErr" class="warnbox" style="margin-top:8px"></div>
       </div>
 
+      <div class="panel" id="encPanel" style="display:none">
+        <label>🔒 암호화된 전송 — 비밀번호 입력</label>
+        <input id="recvPw" type="password" placeholder="송신자와 공유한 비밀번호" autocomplete="off" />
+        <button id="decryptBtn" style="margin-top:8px">복호화</button>
+        <div id="decErr" class="warnbox" style="margin-top:8px"></div>
+      </div>
+
       <video id="video" playsinline muted></video>
       <canvas id="decodeCanvas"></canvas>
 

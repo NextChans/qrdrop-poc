@@ -1,6 +1,7 @@
 import imageCompression from 'browser-image-compression'
 import qrcode from 'qrcode-generator'
-import { FountainEncoder } from './fountain'
+import { FountainEncoder, FLAG_ENCRYPTED } from './fountain'
+import { encryptBytes } from './crypto'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -41,6 +42,13 @@ fileEl.addEventListener('change', () => {
 startBtn.addEventListener('click', start)
 stopBtn.addEventListener('click', stop)
 
+// 암호화 토글 ↔ 비밀번호 입력칸 표시
+const encToggle = $<HTMLInputElement>('encToggle')
+const sendPw = $<HTMLInputElement>('sendPw')
+encToggle.addEventListener('change', () => {
+  $('pwRow').style.display = encToggle.checked ? 'block' : 'none'
+})
+
 // 송신 중 화면 자동 꺼짐 방지(Wake Lock). 미지원 브라우저는 무시.
 async function requestWakeLock() {
   try {
@@ -78,15 +86,35 @@ async function start() {
   })
   const compressedBytes = compressed.size
 
-  const buf = new Uint8Array(await compressed.arrayBuffer())
-  encoder = new FountainEncoder(buf, blockSize)
+  let payload: Uint8Array = new Uint8Array(await compressed.arrayBuffer())
+  let flags = 0
+  if (encToggle.checked) {
+    const pw = sendPw.value
+    if (!pw) {
+      sendStatEl.textContent = '🔒 비밀번호를 입력하세요.'
+      startBtn.disabled = false
+      return
+    }
+    sendStatEl.textContent = '암호화 중...'
+    try {
+      payload = await encryptBytes(pw, payload)
+      flags = FLAG_ENCRYPTED
+    } catch (e) {
+      sendStatEl.textContent = '암호화 실패: ' + (e as Error).message + ' (HTTPS 환경인지 확인하세요)'
+      startBtn.disabled = false
+      return
+    }
+  }
+
+  encoder = new FountainEncoder(payload, blockSize, flags)
   seed = 0
 
   const fps = Number($<HTMLInputElement>('fps').value)
   const passSec = (encoder.k / fps).toFixed(1)
+  const lock = flags ? '🔒 ' : ''
   estimateEl.innerHTML =
-    `원본 ${(originalBytes / 1024).toFixed(0)}KB → 압축 ${(compressedBytes / 1024).toFixed(0)}KB · ` +
-    `블록 ${blockSize}B<br />` +
+    `${lock}원본 ${(originalBytes / 1024).toFixed(0)}KB → 압축 ${(compressedBytes / 1024).toFixed(0)}KB` +
+    `${flags ? ` → 암호화 ${(payload.length / 1024).toFixed(0)}KB` : ''} · 블록 ${blockSize}B<br />` +
     `<b>${encoder.k} 블록</b> · 1패스(=systematic 전체) 약 <b>${passSec}초</b> @ ${fps}fps · ` +
     `sess=${encoder.sess}<br />` +
     `<span class="muted">fountain: 누락은 이후 여분 심볼로 재시청 없이 복구됩니다.</span>`

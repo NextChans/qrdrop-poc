@@ -11,8 +11,8 @@ import qrcode from 'qrcode-generator'
 import jsQR from 'jsqr'
 
 // --- 프레이밍 (src/fountain.ts 미러) ---
-const MAGIC3 = [0x51, 0x44, 0x33] // 'Q','D','3'
-const HEADER = 17
+const MAGIC = [0x51, 0x44, 0x34] // 'Q','D','4'
+const HEADER = 18
 
 function bytesToLatin1(b) {
   let s = ''
@@ -20,16 +20,17 @@ function bytesToLatin1(b) {
   return s
 }
 
-function buildFrame(seed, k, len, sess, payload) {
+function buildFrame(seed, k, len, sess, payload, flags = 0) {
   const buf = new Uint8Array(HEADER + payload.length)
   const dv = new DataView(buf.buffer)
-  buf[0] = MAGIC3[0]
-  buf[1] = MAGIC3[1]
-  buf[2] = MAGIC3[2]
-  dv.setUint32(3, seed >>> 0)
-  dv.setUint16(7, k)
-  dv.setUint32(9, len)
-  dv.setUint32(13, sess >>> 0)
+  buf[0] = MAGIC[0]
+  buf[1] = MAGIC[1]
+  buf[2] = MAGIC[2]
+  buf[3] = flags & 0xff
+  dv.setUint32(4, seed >>> 0)
+  dv.setUint16(8, k)
+  dv.setUint32(10, len)
+  dv.setUint32(14, sess >>> 0)
   buf.set(payload, HEADER)
   return buf
 }
@@ -37,13 +38,14 @@ function buildFrame(seed, k, len, sess, payload) {
 function parseFrame(bin) {
   const b = bin instanceof Uint8Array ? bin : Uint8Array.from(bin)
   if (b.length <= HEADER) return null
-  if (b[0] !== MAGIC3[0] || b[1] !== MAGIC3[1] || b[2] !== MAGIC3[2]) return null
+  if (b[0] !== MAGIC[0] || b[1] !== MAGIC[1] || b[2] !== MAGIC[2]) return null
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
   return {
-    seed: dv.getUint32(3),
-    k: dv.getUint16(7),
-    len: dv.getUint32(9),
-    sess: dv.getUint32(13),
+    flags: b[3],
+    seed: dv.getUint32(4),
+    k: dv.getUint16(8),
+    len: dv.getUint32(10),
+    sess: dv.getUint32(14),
     data: b.slice(HEADER),
   }
 }
@@ -128,13 +130,13 @@ console.log('\n=== 검증 2: 완전한 바이너리 프레임 왕복 (헤더 17B
 console.log('seed |   k |    len |   sess | payload | 결과')
 console.log('-----|-----|--------|--------|---------|-----')
 const cases = [
-  { seed: 0, k: 1, len: 525, sess: 0x00000000, plen: 525 },
-  { seed: 12345, k: 250, len: 130000, sess: 0xdeadbeef, plen: 700 },
-  { seed: 0xffffffff, k: 65535, len: 4000000, sess: 0xffffffff, plen: 900 },
+  { seed: 0, k: 1, len: 525, sess: 0x00000000, plen: 525, flags: 0 },
+  { seed: 12345, k: 250, len: 130000, sess: 0xdeadbeef, plen: 700, flags: 1 },
+  { seed: 0xffffffff, k: 65535, len: 4000000, sess: 0xffffffff, plen: 900, flags: 1 },
 ]
 for (const tc of cases) {
   const payload = adversarialBytes(tc.plen)
-  const frame = buildFrame(tc.seed, tc.k, tc.len, tc.sess, payload)
+  const frame = buildFrame(tc.seed, tc.k, tc.len, tc.sess, payload, tc.flags)
   let parsed = null
   try {
     const r = qrRoundtripBytes(frame, 'M')
@@ -150,6 +152,7 @@ for (const tc of cases) {
     parsed.k === tc.k &&
     parsed.len === tc.len &&
     parsed.sess === tc.sess &&
+    parsed.flags === tc.flags &&
     equal(parsed.data, payload)
   if (ok) pass++
   else fail++
