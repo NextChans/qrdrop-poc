@@ -7,7 +7,8 @@
     "dev": "vite",
     "dev:http": "QRDROP_HTTP=1 vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node test/roundtrip.mjs; node test/fountain.mjs; node test/binary.mjs"
   },
   "dependencies": {
     "browser-image-compression": "^2.0.2",

@@ -1,9 +1,11 @@
-// 브라우저 안에서 전체 파이프라인을 카메라만 빼고 검증한다.
-// send 경로(압축→base64→프레임→QR canvas)와 receive 경로(canvas getImageData→jsQR→재조립)를 직접 연결.
+// 브라우저 안에서 v2 전체 파이프라인을 카메라만 빼고 검증한다.
+// send 경로(압축→fountain 인코더→프레임→QR canvas)와 receive 경로
+// (canvas getImageData→jsQR→fountain 디코더→재조립)를 직접 연결하고,
+// 일부 프레임을 일부러 떨어뜨려(손실) fountain의 재시청 없는 복구를 검증한다.
 import imageCompression from 'browser-image-compression'
 import qrcode from 'qrcode-generator'
 import jsQR from 'jsqr'
-import { buildFrame, parseFrame, bytesToBase64, base64ToBytes, sessionHash, splitBase64 } from './protocol'
+import { FountainEncoder, FountainDecoder, parseFrame } from './fountain'
 
 const out = document.getElementById('out')!
 const log = (s: string) => {
@@ -53,12 +55,12 @@ function renderFrameToCanvas(payload: string, ecc: 'L' | 'M' | 'Q' | 'H', cell =
   return c
 }
 
-// canvas → jsQR 디코딩(수신부와 동일 로직)
-function decodeCanvas(c: HTMLCanvasElement): string | null {
+// canvas → jsQR 디코딩 → raw 바이트(byte mode, 수신부와 동일 로직)
+function decodeCanvas(c: HTMLCanvasElement): number[] | null {
   const g = c.getContext('2d', { willReadFrequently: true })!
   const img = g.getImageData(0, 0, c.width, c.height)
   const code = jsQR(img.data, c.width, c.height, { inversionAttempts: 'dontInvert' })
-  return code?.data ?? null
+  return code?.binaryData ?? null
 }
 
 async function run() {
@@ -68,7 +70,7 @@ async function run() {
   log(`   원본 ${(file.size / 1024).toFixed(0)}KB`)
 
   const ecc: 'M' = 'M'
-  const chunkSize = 700
+  const blockSize = 700 // 프레임당 raw 바이트(base64 없음)
 
   log('2) 압축 (maxDim=600, q=0.6, jpeg)')
   const compressed = await imageCompression(file, {
@@ -80,44 +82,53 @@ async function run() {
   log(`   압축 ${(compressed.size / 1024).toFixed(0)}KB`)
 
   const bytes = new Uint8Array(await compressed.arrayBuffer())
-  const b64 = bytesToBase64(bytes)
-  const sess = sessionHash(b64)
-  const parts = splitBase64(b64, chunkSize)
-  const frames = parts.map((data, idx) => buildFrame({ idx, total: parts.length, sess, data }))
-  log(`3) base64 ${(b64.length / 1024).toFixed(0)}KB → ${frames.length} 청크 (sess=${sess})`)
+  const enc = new FountainEncoder(bytes, blockSize)
+  log(`3) fountain 인코더 · ${enc.k} 블록 (sess=${enc.sess})`)
 
-  log('4) 각 프레임 QR 렌더 → jsQR 디코딩 → 재조립 (전 프레임 라운드트립)')
-  const recovered = new Map<number, string>()
-  let decodeFail = 0
+  const LOSS = 0.2 // 프레임 20% 손실 주입(카메라 누락 시뮬레이션)
+  log(`4) 각 프레임 QR 렌더 → jsQR 디코딩 → fountain 디코더 (손실 ${Math.round(LOSS * 100)}% 주입)`)
+  const dec = new FountainDecoder(enc.k, enc.len, enc.sess, blockSize)
+  let seed = 0
+  let qrFail = 0
+  let dropped = 0
   let firstModules = 0
+  const cap = enc.k * 20 + 500
   const decodeStart = performance.now()
-  for (const fstr of frames) {
-    const c = renderFrameToCanvas(fstr, ecc)
-    if (!firstModules) firstModules = (c.width / 6) - 8
+  while (!dec.done && seed < cap) {
+    const frame = enc.frame(seed)
+    const c = renderFrameToCanvas(frame, ecc)
+    if (!firstModules) firstModules = c.width / 6 - 8
+    seed++
+    if (Math.random() < LOSS) {
+      dropped++
+      continue // 손실: 디코더에 전달하지 않음
+    }
     const decoded = decodeCanvas(c)
     if (decoded === null) {
-      decodeFail++
+      qrFail++
       continue
     }
     const pf = parseFrame(decoded)
-    if (!pf || pf.sess !== sess) {
-      decodeFail++
+    if (!pf || pf.sess !== enc.sess) {
+      qrFail++
       continue
     }
-    recovered.set(pf.idx, pf.data)
+    dec.addSymbol(pf.seed, pf.data)
   }
   const decodeMs = performance.now() - decodeStart
-  log(`   QR 모듈수 ≈ ${firstModules} · 디코딩 실패 ${decodeFail}/${frames.length} · ${(decodeMs / frames.length).toFixed(1)}ms/프레임`)
+  const overhead = (dec.symbolsSeen / enc.k).toFixed(2)
+  log(
+    `   QR 모듈수 ≈ ${firstModules} · QR 디코딩 실패 ${qrFail} · 손실주입 ${dropped} · ` +
+      `수신 심볼 ${dec.symbolsSeen} (오버헤드 ${overhead}×) · ${(decodeMs / Math.max(1, seed)).toFixed(1)}ms/프레임`
+  )
 
   log('5) 재조립 후 원본 바이트 일치 검증')
-  if (recovered.size !== parts.length) {
-    log(`   ❌ 일부 청크 디코딩 실패로 재조립 불가 (${recovered.size}/${parts.length})`)
+  if (!dec.done) {
+    log(`   ❌ 복원 미완료 (${dec.recoveredCount}/${enc.k} 블록, ${seed} 프레임 시도)`)
     finish(false, t0)
     return
   }
-  let rb64 = ''
-  for (let i = 0; i < parts.length; i++) rb64 += recovered.get(i)
-  const rbytes = base64ToBytes(rb64)
+  const rbytes = dec.result()!
   let identical = rbytes.length === bytes.length
   if (identical) for (let i = 0; i < bytes.length; i++) if (rbytes[i] !== bytes[i]) { identical = false; break }
   log(`   복원 ${(rbytes.length / 1024).toFixed(0)}KB · 바이트 동일: ${identical ? 'YES ✅' : 'NO ❌'}`)
@@ -127,7 +138,7 @@ async function run() {
 
 function finish(ok: boolean, t0: number) {
   const ms = (performance.now() - t0).toFixed(0)
-  log(`\n결과: ${ok ? 'PASS ✅ — 전체 파이프라인 정상' : 'FAIL ❌'} (${ms}ms)`)
+  log(`\n결과: ${ok ? 'PASS ✅ — v2 fountain 파이프라인 정상(손실 복구 포함)' : 'FAIL ❌'} (${ms}ms)`)
   ;(window as any).__selftest = { ok }
   out.setAttribute('data-done', ok ? 'pass' : 'fail')
 }
