@@ -5,7 +5,7 @@
 import imageCompression from 'browser-image-compression'
 import qrcode from 'qrcode-generator'
 import jsQR from 'jsqr'
-import { FountainEncoder, FountainDecoder, parseSymbolFrame } from './fountain'
+import { FountainEncoder, FountainDecoder, parseFrame } from './fountain'
 
 const out = document.getElementById('out')!
 const log = (s: string) => {
@@ -55,12 +55,12 @@ function renderFrameToCanvas(payload: string, ecc: 'L' | 'M' | 'Q' | 'H', cell =
   return c
 }
 
-// canvas → jsQR 디코딩(수신부와 동일 로직)
-function decodeCanvas(c: HTMLCanvasElement): string | null {
+// canvas → jsQR 디코딩 → raw 바이트(byte mode, 수신부와 동일 로직)
+function decodeCanvas(c: HTMLCanvasElement): number[] | null {
   const g = c.getContext('2d', { willReadFrequently: true })!
   const img = g.getImageData(0, 0, c.width, c.height)
   const code = jsQR(img.data, c.width, c.height, { inversionAttempts: 'dontInvert' })
-  return code?.data ?? null
+  return code?.binaryData ?? null
 }
 
 async function run() {
@@ -70,7 +70,7 @@ async function run() {
   log(`   원본 ${(file.size / 1024).toFixed(0)}KB`)
 
   const ecc: 'M' = 'M'
-  const blockSize = 525 // base64 ~700 chars 에 해당
+  const blockSize = 700 // 프레임당 raw 바이트(base64 없음)
 
   log('2) 압축 (maxDim=600, q=0.6, jpeg)')
   const compressed = await imageCompression(file, {
@@ -108,7 +108,7 @@ async function run() {
       qrFail++
       continue
     }
-    const pf = parseSymbolFrame(decoded)
+    const pf = parseFrame(decoded)
     if (!pf || pf.sess !== enc.sess) {
       qrFail++
       continue

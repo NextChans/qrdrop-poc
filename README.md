@@ -35,20 +35,24 @@ npm run dev          # 자체서명 HTTPS, https://localhost:5173 + https://<로
 ## 아키텍처
 
 ```
-[송신]  사진 → 압축(JPEG) → base64 → 청크 분할 → 프레임 → QR canvas 애니메이션(loop)
-[수신]  카메라 → canvas getImageData → jsQR → 프레임 파싱 → idx dedup 수집 → 전부 모이면 재조립
+[송신]  사진 → 압축(JPEG) → 블록 분할 → fountain 심볼(무한) → 바이너리 프레임 → QR canvas 애니메이션
+[수신]  카메라 → canvas getImageData → jsQR.binaryData → 프레임 파싱 → fountain peeling 복원
 ```
 
-### 프레임 포맷 (QR byte mode, ASCII)
+### 프레임 포맷 (QR byte mode)
 
-**v2 (현재, LT fountain code)** — `src/fountain.ts`
+**v2 (현재, LT fountain code + raw 바이너리 프레임)** — `src/fountain.ts`
+
+base64 텍스트 프레임을 버리고 **raw 바이너리(QR byte mode)** 로 보낸다. 고정 17바이트 헤더 + 심볼 페이로드(big-endian):
 ```
-QD2:<seed>:<k>:<len>:<sess>:<base64symbol>
+off 0  magic 'Q''D''3'    3B
+off 3  seed   uint32      심볼 식별자. seed<k → systematic(블록 seed 단독, degree 1), seed>=k → LT 랜덤 결합
+off 7  k      uint16      소스 블록 개수
+off 9  len    uint32      원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
+off 13 sess   uint32      원본 바이트 djb2 해시(새 사진/다른 전송 혼입 감지)
+off 17 payload            블록 크기 B 바이트인 심볼(raw)
 ```
-- `seed` — 심볼 식별자(base36). 인코더/디코더가 이 시드로 결합 블록 집합을 동일하게 재생성.
-  `seed < k` 는 **systematic**(블록 seed 단독, degree 1), `seed >= k` 는 **LT 랜덤 결합**.
-- `k` — 소스 블록 개수 / `len` — 원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
-- `sess` — 전체 데이터 djb2 해시(base36). 새 사진/다른 전송 혼입 감지
+- 바이트는 `String.fromCharCode` 로 latin1 문자열화해 `addData(s, 'Byte')` 로 인코딩하고(qrcode-generator는 byte mode에서 `charCodeAt&0xff`), 수신은 `jsQR(...).binaryData`(number[])로 원시 바이트를 그대로 복원한다. **base64 33% 오버헤드 제거.**
 - 송신은 끝없이 심볼을 찍고, 수신은 순서·중복과 무관하게 **"받은 심볼 ≈ 블록 수 + 소량 오버헤드"** 만 모이면 복원(peeling 디코더). **누락 회복에 사이클 재시청 불필요.**
 - systematic 접두 덕분에 **손실 없는 1패스는 v1처럼 1.00× 오버헤드**(블록 그대로 수신), 손실분만 이후 LT 심볼이 메운다 — 두 방식의 장점 결합.
 
@@ -142,6 +146,17 @@ v1 실측에서 병목으로 확정된 **재전송 전략**을 fountain code로 
 
 > **핵심**: **50% 프레임을 잃어도 ~1.2~1.4배 심볼만 받으면 복원** — v1처럼 사이클을 처음부터 재시청할 필요가 없다. v1 실측의 93% tail 낭비가 구조적으로 제거됨. 브라우저 전체 파이프라인(`/selftest.html`)은 손실 20% 주입 상태로 QR 렌더↔jsQR↔fountain 디코드까지 무손실 복원을 검증.
 
+### 6) v2 — raw 바이너리 프레이밍 (`node test/binary.mjs`) ✅
+
+base64를 버리고 임의 바이트를 QR byte mode로 직접 전송. 가장 큰 리스크였던 "qrcode-generator↔jsQR이 임의 바이트(0x00·0xFF·구분자·magic 충돌 포함)를 무손실 왕복하는가"를 실제 QR 인코드/디코드로 검증.
+
+| 검증 | 케이스 | 결과 |
+|---|---|---|
+| 임의 바이트 QR 왕복(binaryData) | 200~1200B × ECC M/Q | **6/6 OK** ✅ |
+| 완전한 바이너리 프레임 왕복 | seed=0xffffffff·k=65535·sess=0xffffffff 등 경계값 | **3/3 OK** ✅ |
+
+> **효과**: 페이로드 base64 오버헤드 33% 제거 → 같은 QR 크기에 약 33% 더 많은 실제 바이트를 실어 전송 프레임 수가 줄어든다. 청크 슬라이더 의미도 `chars` → 프레임당 raw `bytes` 로 변경.
+
 ---
 
 ## 다음 단계 — 두 폰 실측 체크리스트
@@ -167,8 +182,8 @@ v1 실측에서 병목으로 확정된 **재전송 전략**을 fountain code로 
 
 - ~~**단순 인덱스 반복**의 tail 비효율~~ → **v2에서 LT fountain code로 해결**(`src/fountain.ts`, 위 검증 5). 받은 심볼 수 ≈ 블록 수만 되면 순서·중복 무관하게 복원.
 - ~~**화면 밝기/절전**: Wake Lock 미적용~~ → **v2에서 `navigator.wakeLock` 적용**(송신 중 화면 꺼짐 방지, 미지원 브라우저는 무시, 탭 복귀 시 재획득).
+- ~~**base64 33% 오버헤드**~~ → **v2에서 raw 바이너리 프레임(QR byte mode)으로 제거**(`src/fountain.ts`, 검증 6). 17B 고정 헤더 + raw 심볼, `binaryData`로 복원.
 - **ECC L 디코딩 취약** (위 검증). 기본 M 유지.
-- **base64 33% 오버헤드**: QR byte mode로 raw 바이너리 직접 전송 시 제거 가능(헤더/페이로드 분리 프레이밍 필요). → 전송시간 ~25% 단축. **다음 후보**(현재 fountain 심볼도 base64로 프레이밍 중).
 - **fps vs 디스플레이 주사율 동기화**: 송신 fps가 너무 높으면 수신 카메라가 프레임을 건너뜀. 화면 tearing/모아레로 디코딩률 저하 가능 → 현장 튜닝 필요. (fountain은 누락에 강건하므로 fps를 더 공격적으로 올려도 됨)
 - **PWA/오프라인**: manifest·service worker 미적용(브라우저 단독 동작은 확인). 오프라인 설치형으로 만들려면 추가.
 - **큰 사진**: maxDim/quality를 낮추지 않으면 청크 폭증 → 사이클 시간 비현실적. 현재 기본(600px·q0.6)에서 합성샘플 15~18KB로 양호하나, 디테일 많은 실사진은 더 큼.
@@ -179,4 +194,4 @@ v1 실측에서 병목으로 확정된 **재전송 전략**을 fountain code로 
 
 **핵심 기술은 작동한다.** QR 인코더(qrcode-generator)↔디코더(jsQR) 상호운용성, 브라우저 내 압축·청크·QR렌더·재조립이 무손실로 검증됐다(0 디코딩 실패, 바이트 일치).
 
-**v2** 에서 v1 실측의 진짜 병목(재전송 전략)을 **LT fountain code**로 교체해, 50% 손실에서도 ~1.2~1.4× 심볼만으로 무손실 복원함을 검증했다(사이클 재시청 제거). 화면 꺼짐 방지(Wake Lock)도 적용. 남은 단 하나의 미검증 변수는 **실제 카메라 광학 경로**이며, 이는 두 폰 실측으로만 확인 가능하다. 위 체크리스트(특히 v1 대비 완료 시간 단축)로 측정 후 컨셉 확정 권장.
+**v2** 에서 v1 실측의 진짜 병목(재전송 전략)을 **LT fountain code**로 교체해, 50% 손실에서도 ~1.2~1.4× 심볼만으로 무손실 복원함을 검증했다(사이클 재시청 제거). 또한 **raw 바이너리 프레임(QR byte mode)** 으로 base64 33% 오버헤드를 제거하고, 화면 꺼짐 방지(Wake Lock)도 적용했다. 남은 단 하나의 미검증 변수는 **실제 카메라 광학 경로**이며, 이는 두 폰 실측으로만 확인 가능하다. 위 체크리스트(특히 v1 대비 완료 시간 단축)로 측정 후 컨셉 확정 권장.

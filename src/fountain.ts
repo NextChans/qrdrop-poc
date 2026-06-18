@@ -1,4 +1,4 @@
-// QRDrop v2 — LT Fountain code
+// QRDrop v2 — LT Fountain code + raw 바이너리 프레이밍
 //
 // v1의 단순 인덱스 반복 loop는 tail 비효율이 컸다: 한 사이클에서 막판 몇 청크를
 // 못 받으면 전체 시퀀스를 처음부터 다시 시청해야 했다. 두 폰 실측(README 검증 4)에서
@@ -6,23 +6,43 @@
 //
 // v2는 LT(Luby Transform) fountain code로 이를 해결한다. 송신은 끝없이 "심볼"을 찍어내고,
 // 수신은 순서·중복과 무관하게 "받은 심볼 수 ≈ 블록 수 + 소량 오버헤드"만 모이면 복원한다.
-// 누락 회복에 사이클 재시청이 필요 없다.
 //
-// 프레임 포맷(ASCII, QR byte mode):
-//   QD2:<seed>:<k>:<len>:<sess>:<base64symbol>
-//     seed : 심볼 식별자(base36). 인코더/디코더가 이 시드로 결합 블록 집합을 동일하게 재생성.
-//            seed < k 면 systematic(블록 seed 단독, degree 1), seed >= k 면 LT 랜덤 결합.
-//     k    : 소스 블록 개수
-//     len  : 원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
-//     sess : 전체 데이터 djb2 해시(base36) — 새 이미지/다른 전송 혼입 감지
-//     base64symbol : 블록 크기 B 바이트인 한 심볼을 base64 인코딩
+// 프레이밍은 raw 바이너리(QR byte mode)다. v1/초기v2의 base64는 33% 오버헤드가 있었으나,
+// qrcode-generator는 byte mode에서 문자열을 charCodeAt(i)&0xff 로 인코딩하고 jsQR은
+// binaryData(number[])로 원시 바이트를 돌려주므로, 바이트를 latin1 문자열로 실어 보내면
+// base64 없이 임의 바이트(0x00·0xFF·구분자 포함)를 그대로 전송/복원할 수 있다.
+//
+// 바이너리 프레임 레이아웃 (헤더 17B, big-endian):
+//   off 0  : magic 'Q'(0x51) 'D'(0x44) '3'(0x33)   3B
+//   off 3  : seed   uint32   — 심볼 식별자. seed<k 면 systematic(블록 seed 단독), 아니면 LT 랜덤
+//   off 7  : k      uint16   — 소스 블록 개수
+//   off 9  : len    uint32   — 원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
+//   off 13 : sess   uint32   — 원본 바이트 djb2 해시(새 이미지/다른 전송 감지)
+//   off 17 : payload         — 블록 크기 B 바이트인 심볼(raw)
 //
 // systematic 접두(seed 0..k-1) 덕분에 손실 없는 깨끗한 1패스에서는 v1처럼 빠르게 모든
 // 블록을 받고, 그 뒤 LT 심볼(seed>=k)이 누락분을 재시청 없이 메운다 — 두 방식의 장점 결합.
 
-import { base64ToBytes, bytesToBase64, sessionHash } from './protocol'
+export const MAGIC3 = [0x51, 0x44, 0x33] // 'Q','D','3'
+export const HEADER_BYTES = 17
 
-export const MAGIC2 = 'QD2'
+// 원본 바이트 djb2 해시(uint32). 세션 식별용(비암호화).
+function djb2Bytes(bytes: Uint8Array): number {
+  let h = 5381
+  for (let i = 0; i < bytes.length; i++) h = ((h << 5) + h + bytes[i]) | 0
+  return h >>> 0
+}
+
+// Uint8Array → latin1 문자열(바이트당 1문자). qrcode-generator byte mode가 charCodeAt&0xff 로
+// 그대로 인코딩하므로 base64 없이 raw 바이트를 전송할 수 있다. 큰 입력은 청크로 나눠 스택 보호.
+function bytesToLatin1(bytes: Uint8Array): string {
+  let s = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)))
+  }
+  return s
+}
 
 // 32-bit 시드 PRNG (mulberry32). 인코더/디코더가 같은 seed로 동일 난수열을 생성한다.
 export function mulberry32(seed: number): () => number {
@@ -91,7 +111,8 @@ export class FountainEncoder {
   readonly k: number
   readonly blockSize: number
   readonly len: number
-  readonly sess: string
+  readonly sessInt: number
+  readonly sess: string // 표시용(base36)
   private blocks: Uint8Array[] = []
   private cdf: number[]
 
@@ -99,7 +120,8 @@ export class FountainEncoder {
     this.len = bytes.length
     this.blockSize = blockSize
     this.k = Math.max(1, Math.ceil(bytes.length / blockSize))
-    this.sess = sessionHash(bytesToBase64(bytes))
+    this.sessInt = djb2Bytes(bytes)
+    this.sess = this.sessInt.toString(36)
     this.cdf = degreeCDF(this.k)
     for (let i = 0; i < this.k; i++) {
       const b = new Uint8Array(blockSize) // 마지막 블록은 0으로 패딩됨
@@ -114,9 +136,19 @@ export class FountainEncoder {
     return out
   }
 
+  // 바이너리 프레임(헤더 17B + 심볼)을 latin1 문자열로 반환 → qrcode-generator 'Byte' 모드에 그대로.
   frame(seed: number): string {
-    const data = bytesToBase64(this.symbol(seed))
-    return `${MAGIC2}:${seed.toString(36)}:${this.k}:${this.len}:${this.sess}:${data}`
+    const buf = new Uint8Array(HEADER_BYTES + this.blockSize)
+    const dv = new DataView(buf.buffer)
+    buf[0] = MAGIC3[0]
+    buf[1] = MAGIC3[1]
+    buf[2] = MAGIC3[2]
+    dv.setUint32(3, seed >>> 0)
+    dv.setUint16(7, this.k)
+    dv.setUint32(9, this.len)
+    dv.setUint32(13, this.sessInt)
+    buf.set(this.symbol(seed), HEADER_BYTES)
+    return bytesToLatin1(buf)
   }
 }
 
@@ -128,25 +160,19 @@ export interface ParsedSymbol {
   data: Uint8Array
 }
 
-export function parseSymbolFrame(raw: string): ParsedSymbol | null {
-  if (!raw.startsWith(MAGIC2 + ':')) return null
-  const p = raw.split(':')
-  if (p.length !== 6) return null
-  const seed = parseInt(p[1], 36)
-  const k = Number(p[2])
-  const len = Number(p[3])
-  const sess = p[4]
-  if (!Number.isInteger(seed) || seed < 0) return null
-  if (!Number.isInteger(k) || k <= 0) return null
-  if (!Number.isInteger(len) || len <= 0) return null
-  if (!sess || !p[5]) return null
-  let data: Uint8Array
-  try {
-    data = base64ToBytes(p[5])
-  } catch {
-    return null
-  }
-  return { seed, k, len, sess, data }
+// jsQR의 binaryData(number[]) 또는 Uint8Array를 바이너리 프레임으로 파싱.
+export function parseFrame(bin: number[] | Uint8Array): ParsedSymbol | null {
+  const b = bin instanceof Uint8Array ? bin : Uint8Array.from(bin)
+  if (b.length <= HEADER_BYTES) return null
+  if (b[0] !== MAGIC3[0] || b[1] !== MAGIC3[1] || b[2] !== MAGIC3[2]) return null
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
+  const seed = dv.getUint32(3)
+  const k = dv.getUint16(7)
+  const len = dv.getUint32(9)
+  const sessInt = dv.getUint32(13)
+  if (k <= 0 || len <= 0) return null
+  const data = b.slice(HEADER_BYTES)
+  return { seed, k, len, sess: sessInt.toString(36), data }
 }
 
 // LT peeling(belief-propagation) 디코더.

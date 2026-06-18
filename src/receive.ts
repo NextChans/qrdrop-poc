@@ -1,5 +1,5 @@
 import jsQR from 'jsqr'
-import { FountainDecoder, parseSymbolFrame } from './fountain'
+import { FountainDecoder, parseFrame } from './fountain'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -94,8 +94,8 @@ function scan(ts: number) {
       ctx.drawImage(video, 0, 0, w, h)
       const img = ctx.getImageData(0, 0, w, h)
       const code = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' })
-      if (code && code.data) {
-        handlePayload(code.data)
+      if (code && code.binaryData && code.binaryData.length) {
+        handlePayload(code.binaryData) // raw 바이트(byte mode) — base64 없음
       }
     }
   }
@@ -111,8 +111,8 @@ function scan(ts: number) {
   requestAnimationFrame(scan)
 }
 
-function handlePayload(raw: string) {
-  const frame = parseSymbolFrame(raw)
+function handlePayload(bin: number[]) {
+  const frame = parseFrame(bin)
   if (!frame) return
 
   // 새 세션(다른 사진)이거나 첫 프레임이면 디코더 생성

@@ -66,9 +66,8 @@ async function start() {
 
   const maxDim = Number($<HTMLInputElement>('dim').value)
   const quality = Number($<HTMLInputElement>('q').value)
-  // 청크 슬라이더는 base64 chars 기준 → fountain 블록은 바이트 단위(B ≈ chars × 3/4)
-  const chunkChars = Number($<HTMLInputElement>('chunk').value)
-  const blockSize = Math.max(16, Math.floor((chunkChars * 3) / 4))
+  // 청크 슬라이더 = 프레임당 raw 바이트(=fountain 블록 크기). base64를 안 쓰므로 바이트가 곧 페이로드다.
+  const blockSize = Math.max(16, Number($<HTMLInputElement>('chunk').value))
 
   const originalBytes = file.size
   const compressed = await imageCompression(file, {
