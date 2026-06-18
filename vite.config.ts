@@ -19,6 +19,8 @@ const pwa = VitePWA({
     globPatterns: ['**/*.{html,js,css,png,svg,webmanifest}'],
     navigateFallback: null, // MPA — 단일 SPA 폴백 사용 안 함
     cleanupOutdatedCaches: true,
+    skipWaiting: true, // 새 SW 즉시 활성화 → 프로토콜 변경 시 옛 코드가 남지 않도록
+    clientsClaim: true,
   },
   manifest: {
     name: 'QRDrop — 화면↔카메라 사진 전송',
@@ -39,7 +41,11 @@ const pwa = VitePWA({
   },
 })
 
+// 빌드 식별자 — 두 폰이 같은 버전(특히 프로토콜)인지 화면에서 즉시 확인하기 위함.
+const buildId = new Date().toISOString().slice(0, 16).replace('T', ' ')
+
 export default defineConfig({
+  define: { __BUILD_ID__: JSON.stringify(buildId) },
   plugins: httpOnly ? [pwa] : [basicSsl(), pwa],
   server: {
     host: true, // 0.0.0.0 바인딩 → 같은 wifi의 폰에서 접근
