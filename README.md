@@ -43,14 +43,15 @@ npm run dev          # 자체서명 HTTPS, https://localhost:5173 + https://<로
 
 **v2 (현재, LT fountain code + raw 바이너리 프레임)** — `src/fountain.ts`
 
-base64 텍스트 프레임을 버리고 **raw 바이너리(QR byte mode)** 로 보낸다. 고정 17바이트 헤더 + 심볼 페이로드(big-endian):
+base64 텍스트 프레임을 버리고 **raw 바이너리(QR byte mode)** 로 보낸다. 고정 18바이트 헤더 + 심볼 페이로드(big-endian):
 ```
-off 0  magic 'Q''D''3'    3B
-off 3  seed   uint32      심볼 식별자. seed<k → systematic(블록 seed 단독, degree 1), seed>=k → LT 랜덤 결합
-off 7  k      uint16      소스 블록 개수
-off 9  len    uint32      원본 바이트 길이(마지막 블록 zero-pad 트리밍용)
-off 13 sess   uint32      원본 바이트 djb2 해시(새 사진/다른 전송 혼입 감지)
-off 17 payload            블록 크기 B 바이트인 심볼(raw)
+off 0  magic 'Q''D''4'    3B
+off 3  flags  uint8       bit0 = 암호화됨(AES-256-GCM). 나머지 예약
+off 4  seed   uint32      심볼 식별자. seed<k → systematic(블록 seed 단독, degree 1), seed>=k → LT 랜덤 결합
+off 8  k      uint16      소스 블록 개수
+off 10 len    uint32      페이로드 바이트 길이(마지막 블록 zero-pad 트리밍용)
+off 14 sess   uint32      페이로드 djb2 해시(새 사진/다른 전송 혼입 감지)
+off 18 payload            블록 크기 B 바이트인 심볼(raw)
 ```
 - 바이트는 `String.fromCharCode` 로 latin1 문자열화해 `addData(s, 'Byte')` 로 인코딩하고(qrcode-generator는 byte mode에서 `charCodeAt&0xff`), 수신은 `jsQR(...).binaryData`(number[])로 원시 바이트를 그대로 복원한다. **base64 33% 오버헤드 제거.**
 - 송신은 끝없이 심볼을 찍고, 수신은 순서·중복과 무관하게 **"받은 심볼 ≈ 블록 수 + 소량 오버헤드"** 만 모이면 복원(peeling 디코더). **누락 회복에 사이클 재시청 불필요.**
@@ -193,6 +194,21 @@ base64를 버리고 임의 바이트를 QR byte mode로 직접 전송. 가장 �
 | **빠른 프리셋(480·q0.55, fps8)** | **62KB** | **91** | **28.8초** | 125 | **1.37×** |
 
 > 완료 **38.9→28.8초(26%↓)**, 오버헤드 **1.60→1.37×**(역대 최저, 이론 ~1.3 근접). 압축으로 k를 줄인 효과가 그대로 시간 단축으로 나타남. 더 줄이려면 슬라이더로 해상도/화질을 추가로 낮추면 됨.
+
+### 8) 비밀번호 E2E 암호화 (`node test/crypto.mjs`) ✅
+
+송신·수신만 아는 비밀번호로 사진을 암호화해 **보안/비밀 전송** 용도로 확장. 화면을 누가 촬영해 "암호문"을 가져가도 비밀번호 없이는 못 연다.
+
+| 검증 | 결과 |
+|---|---|
+| 올바른 비밀번호 라운드트립 무손실 | OK ✅ |
+| 컨테이너 = salt16 + iv12 + 태그16 + 평문 | OK ✅ |
+| 틀린 비밀번호 거부(GCM 인증 실패) | OK ✅ |
+| 변조된 암호문 거부(무결성) | OK ✅ |
+
+> **방식**(`src/crypto.ts`): PBKDF2-SHA256 **60만 회**로 비밀번호+salt에서 AES-256 키 유도 → **AES-256-GCM** 암호화. 컨테이너 `[salt16 | iv12 | ciphertext+tag]` 를 fountain으로 전송하고, 프레임 헤더 `flags` 비트로 암호화 여부를 표시(수신측이 첫 프레임에서 🔒 인지). WebCrypto만 사용(무의존), 보안 컨텍스트(HTTPS/localhost) 필요.
+>
+> ⚠️ **보안은 전적으로 비밀번호 강도에 의존**: 누구나 화면을 촬영하면 암호문은 확보 가능하므로, 약한 비번은 오프라인 무차별 대입에 취약. **긴 패스프레이즈 권장.** 비밀번호는 앱 밖 별도 채널로 공유(PSK 모델). 강한 비번이면 녹화당해도 안전 + GCM이 변조까지 탐지.
 
 ---
 

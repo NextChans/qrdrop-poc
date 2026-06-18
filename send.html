@@ -54,6 +54,15 @@
             </select>
           </div>
         </div>
+        <div class="row">
+          <div>
+            <label><input type="checkbox" id="encToggle" /> 🔒 암호화 전송 (AES-256-GCM)</label>
+            <div id="pwRow" style="display:none;margin-top:8px">
+              <input id="sendPw" type="password" placeholder="비밀번호 (긴 패스프레이즈 권장)" autocomplete="off" />
+              <div class="muted" style="margin-top:6px">수신자와 따로 공유한 같은 비밀번호로만 복원됩니다. 보안은 비밀번호 강도에 달려 있습니다.</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="panel">

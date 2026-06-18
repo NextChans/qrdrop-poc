@@ -1,5 +1,6 @@
 import jsQR from 'jsqr'
-import { FountainDecoder, parseFrame } from './fountain'
+import { FountainDecoder, parseFrame, FLAG_ENCRYPTED } from './fountain'
+import { decryptBytes } from './crypto'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -21,6 +22,10 @@ const resultBox = $('result')
 const resultImg = $<HTMLImageElement>('resultImg')
 const download = $<HTMLAnchorElement>('download')
 const recvSummary = $('recvSummary')
+const encPanel = $('encPanel')
+const recvPw = $<HTMLInputElement>('recvPw')
+const decryptBtn = $<HTMLButtonElement>('decryptBtn')
+const decErr = $('decErr')
 
 let stream: MediaStream | null = null
 let running = false
@@ -29,12 +34,15 @@ let running = false
 let decoder: FountainDecoder | null = null
 let sess: string | null = null
 let lastSeed = -1 // 화면에 같은 QR이 머무는 동안의 중복 재처리 스킵용
+let encrypted = false
+let container: Uint8Array | null = null // 암호화된 경우 재조립된 컨테이너 보관(비번 재시도용)
 let startTime = 0
 let decodeCountWindow = 0
 let lastFpsTick = 0
 
 startBtn.addEventListener('click', startCam)
 stopBtn.addEventListener('click', stopCam)
+decryptBtn.addEventListener('click', tryDecrypt)
 
 async function startCam() {
   camErr.textContent = ''
@@ -70,9 +78,13 @@ function resetSession() {
   decoder = null
   sess = null
   lastSeed = -1
+  encrypted = false
+  container = null
   startTime = 0
   recvTotal.textContent = '?'
   recvCount.textContent = '0'
+  encPanel.style.display = 'none'
+  decErr.textContent = ''
   buildGrid(0)
   updateProgress()
   resultBox.style.display = 'none'
@@ -122,6 +134,9 @@ function handlePayload(bin: number[]) {
     sess = frame.sess
     lastSeed = -1
     decoder = new FountainDecoder(frame.k, frame.len, frame.sess, frame.data.length)
+    encrypted = (frame.flags & FLAG_ENCRYPTED) !== 0
+    encPanel.style.display = encrypted ? 'block' : 'none'
+    decErr.textContent = ''
     recvTotal.textContent = String(frame.k)
     buildGrid(frame.k)
     startTime = performance.now()
@@ -186,25 +201,51 @@ function reconstruct() {
   if (!decoder) return
   const bytes = decoder.result()
   if (!bytes) return
-  let blob: Blob
-  try {
-    blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }) // subarray → 타이트 복사
-  } catch (e) {
-    missingEl.textContent = '복원 실패: ' + (e as Error).message
-    return
-  }
 
-  const url = URL.createObjectURL(blob)
-  resultImg.src = url
-  download.href = url
-  resultBox.style.display = 'block'
+  running = false // 완료 시 스캔 정지(원하면 다시 시작)
+  stopCam()
 
   const elapsed = startTime ? (performance.now() - startTime) / 1000 : 0
   const overhead = (decoder.symbolsSeen / decoder.k).toFixed(2)
   recvSummary.textContent =
-    `${decoder.k}블록 · ${(blob.size / 1024).toFixed(0)}KB · 첫 심볼~완료 ${elapsed.toFixed(1)}초 · ` +
-    `수신 심볼 ${decoder.symbolsSeen}개 (오버헤드 ${overhead}×)`
+    `${decoder.k}블록 · ${(bytes.length / 1024).toFixed(0)}KB · 첫 심볼~완료 ${elapsed.toFixed(1)}초 · ` +
+    `수신 심볼 ${decoder.symbolsSeen}개 (오버헤드 ${overhead}×)${encrypted ? ' · 🔒' : ''}`
 
-  running = false // 완료 시 스캔 정지(원하면 다시 시작)
-  stopCam()
+  if (encrypted) {
+    // 암호문 보관 → 비밀번호로 복호화(틀리면 재시도 가능)
+    container = new Uint8Array(bytes)
+    decErr.textContent = '✅ 수신 완료. 비밀번호를 입력해 복호화하세요.'
+    encPanel.style.display = 'block'
+    recvPw.focus()
+    if (recvPw.value) tryDecrypt() // 이미 입력해 뒀으면 바로 시도
+  } else {
+    showImage(new Uint8Array(bytes))
+  }
+}
+
+async function tryDecrypt() {
+  if (!container) return
+  const pw = recvPw.value
+  if (!pw) {
+    decErr.textContent = '비밀번호를 입력하세요.'
+    return
+  }
+  decErr.textContent = '복호화 중...'
+  try {
+    const plain = await decryptBytes(pw, container)
+    decErr.textContent = ''
+    encPanel.style.display = 'none'
+    showImage(plain)
+  } catch {
+    decErr.textContent = '❌ 비밀번호가 틀렸거나 데이터가 손상되었습니다.'
+  }
+}
+
+// 평문 JPEG 바이트 → 화면 표시 + 다운로드 링크
+function showImage(bytes: Uint8Array) {
+  const blob = new Blob([bytes as unknown as BlobPart], { type: 'image/jpeg' })
+  const url = URL.createObjectURL(blob)
+  resultImg.src = url
+  download.href = url
+  resultBox.style.display = 'block'
 }
