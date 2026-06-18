@@ -1,5 +1,5 @@
 import jsQR from 'jsqr'
-import { base64ToBytes, parseFrame } from './protocol'
+import { FountainDecoder, parseSymbolFrame } from './fountain'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -26,9 +26,8 @@ let stream: MediaStream | null = null
 let running = false
 
 // 현재 수신 세션 상태
+let decoder: FountainDecoder | null = null
 let sess: string | null = null
-let total = 0
-let chunks = new Map<number, string>()
 let startTime = 0
 let decodeCountWindow = 0
 let lastFpsTick = 0
@@ -54,8 +53,7 @@ async function startCam() {
   running = true
   startBtn.disabled = true
   stopBtn.disabled = false
-  resetSession(null)
-  startTime = 0
+  resetSession()
   requestAnimationFrame(scan)
 }
 
@@ -67,12 +65,12 @@ function stopCam() {
   stopBtn.disabled = true
 }
 
-function resetSession(newSess: string | null) {
-  sess = newSess
-  total = 0
-  chunks = new Map()
+function resetSession() {
+  decoder = null
+  sess = null
   startTime = 0
   recvTotal.textContent = '?'
+  recvCount.textContent = '0'
   buildGrid(0)
   updateProgress()
   resultBox.style.display = 'none'
@@ -114,32 +112,23 @@ function scan(ts: number) {
 }
 
 function handlePayload(raw: string) {
-  const frame = parseFrame(raw)
+  const frame = parseSymbolFrame(raw)
   if (!frame) return
 
-  // 새 세션(다른 사진) 감지 시 리셋
-  if (sess === null) {
+  // 새 세션(다른 사진)이거나 첫 프레임이면 디코더 생성
+  if (!decoder || frame.sess !== sess) {
     sess = frame.sess
-    total = frame.total
-    recvTotal.textContent = String(total)
-    buildGrid(total)
-    startTime = performance.now()
-  } else if (frame.sess !== sess) {
-    resetSession(frame.sess)
-    total = frame.total
-    recvTotal.textContent = String(total)
-    buildGrid(total)
+    decoder = new FountainDecoder(frame.k, frame.len, frame.sess, frame.data.length)
+    recvTotal.textContent = String(frame.k)
+    buildGrid(frame.k)
     startTime = performance.now()
   }
 
-  if (chunks.has(frame.idx)) return // dedup
-  chunks.set(frame.idx, frame.data)
-  markCell(frame.idx)
+  const gotNew = decoder.addSymbol(frame.seed, frame.data)
+  if (gotNew) refreshGrid()
   updateProgress()
 
-  if (chunks.size === total) {
-    reconstruct()
-  }
+  if (decoder.done) reconstruct()
 }
 
 function buildGrid(n: number) {
@@ -154,43 +143,47 @@ function buildGrid(n: number) {
   }
 }
 
-function markCell(idx: number) {
-  const cell = grid.children[idx] as HTMLElement | undefined
-  cell?.classList.add('have')
+// fountain은 블록을 순서와 무관하게 복원하므로, 갱신 시 전체 복원 상태를 다시 칠한다.
+function refreshGrid() {
+  if (!decoder) return
+  for (let i = 0; i < decoder.k; i++) {
+    const cell = grid.children[i] as HTMLElement | undefined
+    if (cell) cell.classList.toggle('have', decoder.isRecovered(i))
+  }
 }
 
 function updateProgress() {
-  const got = chunks.size
+  if (!decoder) {
+    recvCount.textContent = '0'
+    recvPct.textContent = '0%'
+    bar.style.width = '0%'
+    missingEl.textContent = ''
+    return
+  }
+  const got = decoder.recoveredCount
+  const total = decoder.k
   recvCount.textContent = String(got)
   const pct = total ? Math.round((got / total) * 100) : 0
   recvPct.textContent = pct + '%'
   bar.style.width = pct + '%'
 
-  if (total && got < total) {
-    const missing: number[] = []
-    for (let i = 0; i < total; i++) if (!chunks.has(i)) missing.push(i)
-    const preview = missing.slice(0, 30).join(', ')
-    missingEl.textContent =
-      `누락 ${missing.length}개` + (missing.length ? `: ${preview}${missing.length > 30 ? ' …' : ''}` : '')
+  if (got < total) {
+    const overhead = got ? (decoder.symbolsSeen / total).toFixed(2) : '—'
+    missingEl.textContent = `복원 ${got}/${total} 블록 · 수신 심볼 ${decoder.symbolsSeen}개 (오버헤드 ${overhead}×)`
   } else {
     missingEl.textContent = ''
   }
 }
 
 function reconstruct() {
-  // idx 순서대로 base64 이어붙이기
-  let b64 = ''
-  for (let i = 0; i < total; i++) {
-    const part = chunks.get(i)
-    if (part === undefined) return // 안전장치(이론상 도달 안 함)
-    b64 += part
-  }
+  if (!decoder) return
+  const bytes = decoder.result()
+  if (!bytes) return
   let blob: Blob
   try {
-    const bytes = base64ToBytes(b64)
-    blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'image/jpeg' })
+    blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' }) // subarray → 타이트 복사
   } catch (e) {
-    missingEl.textContent = '복원 실패(base64 손상): ' + (e as Error).message
+    missingEl.textContent = '복원 실패: ' + (e as Error).message
     return
   }
 
@@ -200,8 +193,10 @@ function reconstruct() {
   resultBox.style.display = 'block'
 
   const elapsed = startTime ? (performance.now() - startTime) / 1000 : 0
+  const overhead = (decoder.symbolsSeen / decoder.k).toFixed(2)
   recvSummary.textContent =
-    `${total}청크 · ${(blob.size / 1024).toFixed(0)}KB · 첫 청크~완료 ${elapsed.toFixed(1)}초`
+    `${decoder.k}블록 · ${(blob.size / 1024).toFixed(0)}KB · 첫 심볼~완료 ${elapsed.toFixed(1)}초 · ` +
+    `수신 심볼 ${decoder.symbolsSeen}개 (오버헤드 ${overhead}×)`
 
   running = false // 완료 시 스캔 정지(원하면 다시 시작)
   stopCam()

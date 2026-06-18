@@ -1,6 +1,6 @@
 import imageCompression from 'browser-image-compression'
 import qrcode from 'qrcode-generator'
-import { buildFrame, bytesToBase64, sessionHash, splitBase64 } from './protocol'
+import { FountainEncoder } from './fountain'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -27,12 +27,10 @@ for (const [id, valId, fmt] of sliders) {
   sync()
 }
 
-let frames: string[] = []
-let frameIdx = 0
-let cycle = 0
+let encoder: FountainEncoder | null = null
+let seed = 0
 let timer: number | null = null
-let originalBytes = 0
-let compressedBytes = 0
+let wakeLock: WakeLockSentinel | null = null
 
 fileEl.addEventListener('change', () => {
   startBtn.disabled = !fileEl.files?.length
@@ -43,6 +41,23 @@ fileEl.addEventListener('change', () => {
 startBtn.addEventListener('click', start)
 stopBtn.addEventListener('click', stop)
 
+// 송신 중 화면 자동 꺼짐 방지(Wake Lock). 미지원 브라우저는 무시.
+async function requestWakeLock() {
+  try {
+    wakeLock = (await navigator.wakeLock?.request('screen')) ?? null
+  } catch {
+    wakeLock = null
+  }
+}
+function releaseWakeLock() {
+  wakeLock?.release().catch(() => {})
+  wakeLock = null
+}
+// 탭이 다시 보이면 wake lock 재획득(브라우저가 숨김 시 해제하므로)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && timer !== null && !wakeLock) requestWakeLock()
+})
+
 async function start() {
   const file = fileEl.files?.[0]
   if (!file) return
@@ -51,34 +66,34 @@ async function start() {
 
   const maxDim = Number($<HTMLInputElement>('dim').value)
   const quality = Number($<HTMLInputElement>('q').value)
-  const chunkSize = Number($<HTMLInputElement>('chunk').value)
+  // 청크 슬라이더는 base64 chars 기준 → fountain 블록은 바이트 단위(B ≈ chars × 3/4)
+  const chunkChars = Number($<HTMLInputElement>('chunk').value)
+  const blockSize = Math.max(16, Math.floor((chunkChars * 3) / 4))
 
-  originalBytes = file.size
+  const originalBytes = file.size
   const compressed = await imageCompression(file, {
     maxWidthOrHeight: maxDim,
     initialQuality: quality,
     fileType: 'image/jpeg',
     useWebWorker: true,
   })
-  compressedBytes = compressed.size
+  const compressedBytes = compressed.size
 
   const buf = new Uint8Array(await compressed.arrayBuffer())
-  const b64 = bytesToBase64(buf)
-  const sess = sessionHash(b64)
-  const parts = splitBase64(b64, chunkSize)
-  frames = parts.map((data, idx) => buildFrame({ idx, total: parts.length, sess, data }))
-
-  frameIdx = 0
-  cycle = 0
+  encoder = new FountainEncoder(buf, blockSize)
+  seed = 0
 
   const fps = Number($<HTMLInputElement>('fps').value)
-  const cycleSec = (frames.length / fps).toFixed(1)
+  const passSec = (encoder.k / fps).toFixed(1)
   estimateEl.innerHTML =
     `원본 ${(originalBytes / 1024).toFixed(0)}KB → 압축 ${(compressedBytes / 1024).toFixed(0)}KB · ` +
-    `base64 ${(b64.length / 1024).toFixed(0)}KB<br />` +
-    `<b>${frames.length} 청크</b> · 1 사이클 약 <b>${cycleSec}초</b> @ ${fps}fps · sess=${sess}`
+    `블록 ${blockSize}B<br />` +
+    `<b>${encoder.k} 블록</b> · 1패스(=systematic 전체) 약 <b>${passSec}초</b> @ ${fps}fps · ` +
+    `sess=${encoder.sess}<br />` +
+    `<span class="muted">fountain: 누락은 이후 여분 심볼로 재시청 없이 복구됩니다.</span>`
 
   stopBtn.disabled = false
+  requestWakeLock()
   loop()
 }
 
@@ -87,25 +102,29 @@ function stop() {
     clearTimeout(timer)
     timer = null
   }
+  releaseWakeLock()
   stopBtn.disabled = true
   startBtn.disabled = !fileEl.files?.length
 }
 
 function loop() {
-  if (!frames.length) return
-  renderQR(frames[frameIdx])
-  sendStatEl.textContent = `프레임 ${frameIdx + 1}/${frames.length} · 사이클 ${cycle + 1}`
+  if (!encoder) return
+  const frame = encoder.frame(seed)
+  if (!renderQR(frame)) return // QR 생성 실패 시 중단(청크 줄이라 안내됨)
 
-  frameIdx++
-  if (frameIdx >= frames.length) {
-    frameIdx = 0
-    cycle++
-  }
+  const pass = Math.floor(seed / encoder.k) + 1
+  const posInPass = (seed % encoder.k) + 1
+  sendStatEl.textContent =
+    seed < encoder.k
+      ? `systematic 블록 ${posInPass}/${encoder.k} · seed ${seed}`
+      : `여분 심볼 송출 중 · 패스 ${pass} · seed ${seed}`
+
+  seed++
   const fps = Number($<HTMLInputElement>('fps').value)
   timer = window.setTimeout(loop, 1000 / fps)
 }
 
-function renderQR(payload: string) {
+function renderQR(payload: string): boolean {
   const ecc = $<HTMLSelectElement>('ecc').value as 'L' | 'M' | 'Q' | 'H'
   let qr
   try {
@@ -116,7 +135,7 @@ function renderQR(payload: string) {
     // 청크가 너무 커서 version 40도 초과 → 사용자에게 청크 줄이라고 안내
     sendStatEl.textContent = `⚠️ 청크가 너무 큽니다. 청크 크기를 줄이세요. (${(e as Error).message})`
     stop()
-    return
+    return false
   }
 
   const count = qr.getModuleCount()
@@ -144,4 +163,5 @@ function renderQR(payload: string) {
       }
     }
   }
+  return true
 }
